@@ -1,2 +1,17 @@
-# JapaneseTextSummarizationWithProxySupport
+## JapaneseTextSummarizationWithProxySupport
 Transformersライブラリを使用した高精度な日本語テキスト要約プログラムです。プロキシ環境に対応しています。
+
+## 概要
+
+このプログラムは、Hugging FaceのTransformersライブラリを活用して、日本語テキストを自動的に要約します。以下の特徴があります：
+
+- **高精度な要約** - 事前学習済みの日本語モデルを使用
+- **プロキシ対応** - 企業ネットワーク環境での使用に対応
+- **エラーハンドリング** - 代替モデルの自動選択機能
+- **バッチ処理** - 複数のテキストを一度に処理可能
+- **詳細なログ出力** - 処理状況をリアルタイムで確認
+
+## 必要な環境
+
+- Python 3.8以上
+- CUDA 11.0以上（GPU使用時）
