@@ -1,0 +1,2 @@
+# JapaneseTextSummarizationWithProxySupport
+Transformersライブラリを使用した高精度な日本語テキスト要約プログラムです。プロキシ環境に対応しています。
