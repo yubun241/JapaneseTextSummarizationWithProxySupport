@@ -1,0 +1,318 @@
+from transformers import pipeline
+from typing import List, Dict, Optional
+import logging
+import os
+import sys
+
+# ========================================
+# ロギング設定
+# ========================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+# ========================================
+# プロキシ設定クラス
+# ========================================
+
+class ProxyConfig:
+    """プロキシ設定を管理するクラス"""
+    
+    def __init__(
+        self,
+        http_proxy: Optional[str] = None,
+        https_proxy: Optional[str] = None,
+        no_proxy: Optional[str] = None
+    ):
+        """
+        初期化
+        
+        Args:
+            http_proxy: HTTPプロキシURL
+            https_proxy: HTTPSプロキシURL
+            no_proxy: プロキシを使用しないホスト
+        """
+        self.http_proxy = http_proxy or os.getenv('HTTP_PROXY') or os.getenv('http_proxy')
+        self.https_proxy = https_proxy or os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
+        self.no_proxy = no_proxy or os.getenv('NO_PROXY') or os.getenv('no_proxy')
+    
+    def apply(self) -> None:
+        """プロキシ設定を環境変数に適用"""
+        if self.http_proxy:
+            os.environ['HTTP_PROXY'] = self.http_proxy
+            os.environ['http_proxy'] = self.http_proxy
+            logger.info(f"HTTP_PROXY: {self._mask_credentials(self.http_proxy)}")
+        
+        if self.https_proxy:
+            os.environ['HTTPS_PROXY'] = self.https_proxy
+            os.environ['https_proxy'] = self.https_proxy
+            logger.info(f"HTTPS_PROXY: {self._mask_credentials(self.https_proxy)}")
+        
+        if self.no_proxy:
+            os.environ['NO_PROXY'] = self.no_proxy
+            os.environ['no_proxy'] = self.no_proxy
+            logger.info(f"NO_PROXY: {self.no_proxy}")
+    
+    def display(self) -> None:
+        """現在のプロキシ設定を表示"""
+        print("\n" + "="*60)
+        print("【プロキシ設定情報】")
+        print("="*60)
+        print(f"HTTP_PROXY:  {self._mask_credentials(self.http_proxy) if self.http_proxy else '未設定'}")
+        print(f"HTTPS_PROXY: {self._mask_credentials(self.https_proxy) if self.https_proxy else '未設定'}")
+        print(f"NO_PROXY:    {self.no_proxy if self.no_proxy else '未設定'}")
+        print("="*60 + "\n")
+    
+    @staticmethod
+    def _mask_credentials(url: str) -> str:
+        """URLの認証情報をマスク"""
+        if '@' in url:
+            scheme, rest = url.split('://', 1)
+            _, host_port = rest.split('@', 1)
+            return f"{scheme}://***@{host_port}"
+        return url
+
+
+# ========================================
+# テキスト要約クラス
+# ========================================
+
+class TextSummarizer:
+    """日本語テキストを要約するクラス"""
+    
+    # 利用可能なモデル一覧
+    AVAILABLE_MODELS = {
+        "t5": "megagonlabs/t5-base-japanese-web",
+        "bart": "facebook/bart-large-cnn",
+        "mbart": "facebook/mbart-large-50-many-to-many-mmt",
+    }
+    
+    def __init__(
+        self,
+        model_name: str = "megagonlabs/t5-base-japanese-web",
+        device: int = -1,
+        proxy_config: Optional[ProxyConfig] = None,
+        use_fast_tokenizer: bool = False
+    ):
+        """
+        初期化
+        
+        Args:
+            model_name: 使用するモデル名
+            device: 使用デバイス（0=GPU, -1=CPU）
+            proxy_config: プロキシ設定オブジェクト
+            use_fast_tokenizer: Fast Tokenizerを使用するか
+        """
+        if proxy_config:
+            proxy_config.apply()
+            proxy_config.display()
+        
+        logger.info(f"モデルを読み込み中: {model_name}")
+        try:
+            self.summarizer = pipeline(
+                "summarization",
+                model=model_name,
+                device=device,
+                use_fast=use_fast_tokenizer
+            )
+            logger.info("✓ モデルの読み込み完了")
+        except Exception as e:
+            logger.error(f"モデル読み込みエラー: {e}")
+            logger.info("代替モデルを試行します...")
+            self._try_alternative_model(device, use_fast_tokenizer)
+    
+    def _try_alternative_model(self, device: int, use_fast_tokenizer: bool) -> None:
+        """代替モデルを試す"""
+        fallback_models = [
+            "facebook/bart-large-cnn",
+            "facebook/mbart-large-50-many-to-many-mmt",
+        ]
+        
+        for alt_model in fallback_models:
+            try:
+                logger.info(f"代替モデルを試行: {alt_model}")
+                self.summarizer = pipeline(
+                    "summarization",
+                    model=alt_model,
+                    device=device,
+                    use_fast=use_fast_tokenizer
+                )
+                logger.info(f"✓ 代替モデル読み込み成功: {alt_model}")
+                return
+            except Exception as e:
+                logger.warning(f"代替モデル失敗: {alt_model} - {str(e)[:100]}")
+                continue
+        
+        raise RuntimeError("利用可能なモデルが見つかりません")
+    
+    def summarize(
+        self,
+        text: str,
+        max_length: int = 50,
+        min_length: int = 10
+    ) -> str:
+        """
+        単一のテキストを要約
+        
+        Args:
+            text: 要約するテキスト
+            max_length: 最大トークン数
+            min_length: 最小トークン数
+        
+        Returns:
+            要約されたテキスト
+        """
+        try:
+            summary = self.summarizer(
+                text,
+                max_length=max_length,
+                min_length=min_length
+            )
+            return summary[0]['summary_text']
+        except Exception as e:
+            logger.error(f"要約処理でエラー: {e}")
+            raise
+    
+    def summarize_multiple(
+        self,
+        texts: List[str],
+        max_length: int = 50,
+        min_length: int = 10
+    ) -> List[Dict[str, str]]:
+        """
+        複数のテキストを要約
+        
+        Args:
+            texts: 要約するテキストのリスト
+            max_length: 最大トークン数
+            min_length: 最小トークン数
+        
+        Returns:
+            元のテキストと要約のペアのリスト
+        """
+        results = []
+        total = len(texts)
+        
+        for i, text in enumerate(texts, 1):
+            logger.info(f"処理中... [{i}/{total}]")
+            summary = self.summarize(text, max_length, min_length)
+            results.append({
+                'index': i,
+                'original': text,
+                'summary': summary
+            })
+        
+        logger.info(f"✓ 全テキスト処理完了（{total}件）")
+        return results
+
+
+# ========================================
+# ユーティリティ関数
+# ========================================
+
+def print_result(result: Dict[str, str]) -> None:
+    """結果を見やすく表示"""
+    print(f"\n{'='*70}")
+    print(f"【テキスト {result['index']}】")
+    print(f"{'='*70}")
+    print(f"\n📝 元のテキスト:")
+    print(f"{result['original']}")
+    print(f"\n✨ 要約結果:")
+    print(f"{result['summary']}")
+    print()
+
+
+def get_test_texts() -> List[str]:
+    """テスト用のサンプルテキストを返す"""
+    return [
+        """
+        Pythonは非常に人気のあるプログラミング言語です。
+        シンプルで読みやすい構文が特徴で、初心者にも優しい言語として知られています。
+        また、データ分析、機械学習、ウェブ開発、自動化など、幅広い用途に使われています。
+        豊富なライブラリとフレームワークが充実しており、開発効率が高いのが利点です。
+        """,
+        """
+        機械学習は人工知能の一分野です。
+        データから自動的にパターンを学習し、予測や分類を行います。
+        様々な産業で活用されており、今後さらに重要になると考えられています。
+        特に、ディープラーニングの発展により、複雑な問題の解決が可能になりました。
+        """,
+        """
+        クラウドコンピューティングはインターネット経由でコンピュータリソースを提供するサービスです。
+        スケーラビリティ、コスト削減、アクセスの容易性が利点として挙げられます。
+        AWS、Google Cloud、Microsoft Azureなどが主要なプロバイダーです。
+        企業のデジタル変革を支える重要なインフラとなっています。
+        """
+    ]
+
+
+# ========================================
+# メイン処理
+# ========================================
+
+def main():
+    """メイン処理"""
+    
+    logger.info("="*70)
+    logger.info("日本語テキスト要約プログラムを開始します")
+    logger.info("="*70)
+    
+    try:
+        # プロキシ設定
+        proxy_config = ProxyConfig(
+            http_proxy="http://xx.xxx.x.xx:xxxx",
+            https_proxy="http://xx.xxx.x.xx:xxxx"
+        )
+        
+        # サマライザーのインスタンス化
+        summarizer = TextSummarizer(
+            model_name="megagonlabs/t5-base-japanese-web",
+            device=-1,
+            proxy_config=proxy_config,
+            use_fast_tokenizer=False  # Fast Tokenizerを無効化
+        )
+        
+        # テスト用テキストを取得
+        test_texts = get_test_texts()
+        logger.info(f"テスト用テキスト数: {len(test_texts)}")
+        
+        # 複数テキストの要約
+        results = summarizer.summarize_multiple(
+            test_texts,
+            max_length=50,
+            min_length=10
+        )
+        
+        # 結果の表示
+        print("\n" + "="*70)
+        print("【要約結果】")
+        print("="*70)
+        
+        for result in results:
+            print_result(result)
+        
+        # 完了メッセージ
+        print("="*70)
+        print("✅ プログラム実行完了")
+        print("="*70)
+        
+        return 0
+        
+    except KeyboardInterrupt:
+        logger.warning("\nユーザーによる中断")
+        return 1
+    except Exception as e:
+        logger.error(f"エラーが発生しました: {e}", exc_info=True)
+        return 1
+
+
+# ========================================
+# エントリーポイント
+# ========================================
+
+if __name__ == "__main__":
+    sys.exit(main())
